@@ -21,16 +21,21 @@ package coremain
 
 import (
 	"fmt"
-	"github.com/IrineSistiana/mosdns/v5/mlog"
-	"github.com/kardianos/service"
-	"github.com/mitchellh/mapstructure"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
+	"log"
 	"os"
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
+
+	"github.com/kardianos/service"
+	"github.com/mitchellh/mapstructure"
+	"github.com/radovskyb/watcher"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"go.uber.org/zap"
+
+	"github.com/IrineSistiana/mosdns/v5/mlog"
 )
 
 type serverFlags struct {
@@ -58,19 +63,70 @@ func init() {
 				return svc.Run()
 			}
 
-			m, err := NewServer(sf)
-			if err != nil {
-				return err
+			var m *Mosdns
+			var handler = func(sf *serverFlags) {
+				var err error
+				m, err = NewServer(sf)
+				if err != nil {
+					return
+				}
+
+				go func() {
+					c := make(chan os.Signal, 1)
+					signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+					sig := <-c
+					m.logger.Warn("signal received", zap.Stringer("signal", sig))
+					m.sc.SendCloseSignal(nil)
+				}()
+
+				m.GetSafeClose().WaitClosed()
+
+			}
+			go handler(sf)
+
+			w := watcher.New()
+
+			// 设置监听模式为所有事件
+			w.SetMaxEvents(1)
+			w.FilterOps(watcher.Write, watcher.Create, watcher.Remove, watcher.Rename, watcher.Move)
+
+			defer w.Close()
+
+			go func() {
+				for {
+					select {
+					case event := <-w.Event:
+						mlog.L().Info("server reload by config change")
+						m.sc.SendCloseSignal(nil)
+						mlog.L().Info("config change:", zap.String("file", event.Path))
+						go handler(sf)
+
+					case err := <-w.Error:
+						log.Fatalln(err)
+					case <-w.Closed:
+						return
+					}
+				}
+			}()
+
+			if err := w.Add("/data/mosdns/config.yaml"); err != nil {
+				log.Fatalln(err)
 			}
 
 			go func() {
-				c := make(chan os.Signal, 1)
-				signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-				sig := <-c
-				m.logger.Warn("signal received", zap.Stringer("signal", sig))
-				m.sc.SendCloseSignal(nil)
+				if err := w.Start(time.Millisecond * 100); err != nil {
+					log.Fatalln(err)
+				}
 			}()
-			return m.GetSafeClose().WaitClosed()
+
+			quit := make(chan os.Signal)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+			log.Println("Shuting down server...")
+
+			log.Println("Server exiting")
+
+			return nil
 		},
 		DisableFlagsInUseLine: true,
 		SilenceUsage:          true,
