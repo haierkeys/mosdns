@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"syscall"
 	"time"
 
@@ -84,11 +85,34 @@ func init() {
 			}
 			go handler(sf)
 
+			var needWatchFiles []string
+
+			needWatchFiles = append(needWatchFiles, sf.c)
+
+			cfg, _, _ := loadConfig(sf.c)
+
+			needWatchFiles = append(needWatchFiles, cfg.Include...)
+
+			for _, pc := range cfg.Plugins {
+				if pc.Type == "domain_set" || pc.Type == "ip_set" || pc.Type == "hosts" {
+					for t, files := range pc.Args.(map[string]interface{}) {
+						if t == "files" {
+							for _, file := range files.([]interface{}) {
+								if slices.Contains(needWatchFiles, file.(string)) == false {
+									needWatchFiles = append(needWatchFiles, file.(string))
+								}
+
+							}
+						}
+					}
+				}
+			}
+
 			w := watcher.New()
 
 			// 设置监听模式为所有事件
 			w.SetMaxEvents(1)
-			w.FilterOps(watcher.Write, watcher.Create, watcher.Remove, watcher.Rename, watcher.Move)
+			w.FilterOps(watcher.Write)
 
 			defer w.Close()
 
@@ -96,9 +120,8 @@ func init() {
 				for {
 					select {
 					case event := <-w.Event:
-						mlog.L().Info("server reload by config change")
 						m.sc.SendCloseSignal(nil)
-						mlog.L().Info("config change:", zap.String("file", event.Path))
+						mlog.L().Info("server restart by config file change:", zap.String("file", event.Path))
 						go handler(sf)
 
 					case err := <-w.Error:
@@ -109,8 +132,10 @@ func init() {
 				}
 			}()
 
-			if err := w.Add("/data/mosdns/config.yaml"); err != nil {
-				log.Fatalln(err)
+			for _, file := range needWatchFiles {
+				if err := w.Add(file); err != nil {
+					log.Fatalln(err)
+				}
 			}
 
 			go func() {
@@ -122,9 +147,7 @@ func init() {
 			quit := make(chan os.Signal)
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 			<-quit
-			log.Println("Shuting down server...")
-
-			log.Println("Server exiting")
+			mlog.L().Info("service stop")
 
 			return nil
 		},
