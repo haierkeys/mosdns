@@ -1,7 +1,6 @@
-# mosdns
+# mosdns v5.3.3-diybeta版
 
-功能概述、配置方式、教程等，详见: [wiki](https://irine-sistiana.gitbook.io/mosdns-wiki/)
+#### 特性
 
-下载预编译文件、更新日志，详见: [release](https://github.com/IrineSistiana/mosdns/releases)
-
-docker 镜像: [docker hub](https://hub.docker.com/r/irinesistiana/mosdns)
+1. 增加 配置变更动态加载<br>
+   监听 mosdns 配置变更,让服务器动态加载变更的配置....<br>支持 配置文件 / include / domain_set / ip_set / hosts 变更监听
